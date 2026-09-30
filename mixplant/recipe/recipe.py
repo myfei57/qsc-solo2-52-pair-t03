@@ -53,6 +53,11 @@ class Recipe:
             raise ValidationError("recipe has no factor for this material", name=self.name, material=material)
         return value
 
+    def factor_or_zero(self, material: str) -> float:
+        """Return a material factor without requiring it to be declared."""
+
+        return float(self.factors.get(material, 0.0))
+
     def describe(self) -> dict[str, Any]:
         return {
             "name": self.name,

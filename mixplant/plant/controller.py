@@ -28,6 +28,7 @@ class PlantController:
             recipe_service=self.runtime.recipes,
             agg_service=self.runtime.agg,
             moist_service=self.runtime.moist,
+            water_service=self.runtime.water,
             config=self.runtime.config.describe(),
         )
 

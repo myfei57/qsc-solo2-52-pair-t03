@@ -15,6 +15,7 @@ def production_summary(
     alarms: int,
     samples: int,
     now: int,
+    water: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Fold the derived state into the numbers a shift report needs."""
 
@@ -29,4 +30,5 @@ def production_summary(
         "pumped": flag(state, "pump.run"),
         "samples": samples,
         "alarms": alarms,
+        "water": None if water is None else dict(water),
     }

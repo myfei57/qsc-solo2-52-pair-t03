@@ -10,6 +10,8 @@ from .router import Request, Response, Router
 COMMANDS = (
     ("POST", "/api/recipe/publish", "recipe.publish"),
     ("POST", "/api/recipe/select", "recipe.select"),
+    ("POST", "/api/water-quota", "water_quota.publish"),
+    ("POST", "/api/water/quota", "water.quota.publish"),
 )
 
 
@@ -22,6 +24,16 @@ def register(router: Router, runtime: Any, pages: Any) -> None:
         lambda _: Response.html(inject_snapshot(pages.load("recipe"), runtime.controller.recipe_view())),
     )
     router.add("GET", "/api/recipes", lambda _: Response.json(runtime.controller.recipe_view()))
+    router.add(
+        "GET",
+        "/api/water-quotas/{grade}",
+        lambda request: Response.json(runtime.water_quota_history(request.params["grade"])),
+    )
+    router.add(
+        "GET",
+        "/api/water/quotas/{grade}",
+        lambda request: Response.json(runtime.water_quota_history(request.params["grade"])),
+    )
     for method, path, command in COMMANDS:
         router.add(method, path, _command(runtime, command))
 

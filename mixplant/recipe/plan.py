@@ -34,6 +34,10 @@ class BatchPlan:
     def dry_total(self) -> float:
         return round(sum(self.materials.values()), 4)
 
+    @property
+    def mixing_water_l(self) -> float:
+        return round(float(self.materials.get("water", 0.0)), 4)
+
     def describe(self) -> dict[str, Any]:
         return {
             "batch_id": self.batch_id,
@@ -43,6 +47,7 @@ class BatchPlan:
             "unit": self.unit,
             "materials": dict(self.materials),
             "dry_total": self.dry_total,
+            "mixing_water_l": self.mixing_water_l,
             "free_water_l": self.free_water_l,
             "moisture_percent": self.moisture_percent,
         }

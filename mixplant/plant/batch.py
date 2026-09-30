@@ -7,7 +7,14 @@ from typing import Any, Mapping
 from ..recipe.batch import plan_summary
 
 
-def batch_view(*, recipe_service: Any, agg_service: Any, moist_service: Any, config: Mapping[str, Any]) -> dict[str, Any]:
+def batch_view(
+    *,
+    recipe_service: Any,
+    agg_service: Any,
+    moist_service: Any,
+    water_service: Any,
+    config: Mapping[str, Any],
+) -> dict[str, Any]:
     """Build the batching view, including the per bin targets."""
 
     batch = agg_service.context.batches.latest()
@@ -16,6 +23,7 @@ def batch_view(*, recipe_service: Any, agg_service: Any, moist_service: Any, con
         "recipe": recipe_service.status(),
         "aggregate": agg_service.status(),
         "moisture": moist_service.status(),
+        "water": water_service.status(),
         "config": dict(config),
         "targets": None,
         "plan": None,

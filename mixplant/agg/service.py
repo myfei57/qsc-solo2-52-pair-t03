@@ -46,9 +46,11 @@ class AggService(PlantService):
         context: SharedContext,
         recipes: RecipeService,
         machine: SequenceMachine | None = None,
+        water_service: Any | None = None,
     ) -> None:
         super().__init__(context, machine)
         self.recipes = recipes
+        self.water_service = water_service
         self._calibration = calibrate(slope=1.0, offset=0.0)
         self._reports: list[dict[str, Any]] = []
 
@@ -75,8 +77,23 @@ class AggService(PlantService):
             quantity=quantity,
         )
         self.publish(BATCH_KIND, batch_payload(plan))
-        self.emit("agg.batch_declared", {**batch.describe(), "targets": plan.describe()["materials"]})
-        return {"batch": batch.describe(), "batches": self.context.batches.count()}
+        if self.water_service is not None:
+            binding = self.water_service.bind_current_batch(total_water_l=plan.mixing_water_l)
+        else:
+            binding = None
+        self.emit(
+            "agg.batch_declared",
+            {
+                **batch.describe(),
+                "targets": plan.describe()["materials"],
+                "water_quota": None if binding is None else binding.describe(),
+            },
+        )
+        return {
+            "batch": batch.describe(),
+            "batches": self.context.batches.count(),
+            "water_quota": None if binding is None else binding.describe(),
+        }
 
     def map_bin(self, bin_name: str, material: str) -> dict[str, Any]:
         """Refresh the bin assignment for the selected recipe version."""

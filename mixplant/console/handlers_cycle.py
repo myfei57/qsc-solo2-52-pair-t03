@@ -12,6 +12,7 @@ COMMANDS = (
     ("POST", "/api/cement/gate/close", "cement.close_gate"),
     ("POST", "/api/water/valve", "water.open_valve"),
     ("POST", "/api/water/dispense", "water.dispense"),
+    ("POST", "/api/water/flush", "water.flush"),
     ("POST", "/api/water/prime", "water.prime"),
     ("POST", "/api/mix/start", "mix.start"),
     ("POST", "/api/mix/feed", "mix.feed"),
@@ -29,6 +30,11 @@ def register(router: Router, runtime: Any, pages: Any) -> None:
     """Register the cycle routes."""
 
     router.add("GET", "/api/cycle", lambda _: Response.json(runtime.controller.mix_view()))
+    router.add(
+        "GET",
+        "/api/water/usage/{batch_id}",
+        lambda request: Response.json(runtime.water_usage(request.params["batch_id"])),
+    )
     for method, path, command in COMMANDS:
         router.add(method, path, _command(runtime, command))
 

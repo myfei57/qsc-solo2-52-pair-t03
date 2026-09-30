@@ -20,10 +20,11 @@ class AuditService(PlantService):
     line = "batch"
     subject = "audit"
 
-    def __init__(self, context, machine=None, *, alarms=None) -> None:
+    def __init__(self, context, machine=None, *, alarms=None, water=None) -> None:
         super().__init__(context, machine)
         self.ledger = AuditLedger()
         self._alarms = alarms
+        self._water = water
         self._samples = 0
 
     def note(self, name: str, detail: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -56,6 +57,7 @@ class AuditService(PlantService):
             alarms=0 if self._alarms is None else self._alarms.count(),
             samples=self._samples,
             now=self.context.clock.now(),
+            water=None if self._water is None else self._water.account(),
         )
         self.publish(ROLLUP_KIND, {"active": True, **summary})
         return summary

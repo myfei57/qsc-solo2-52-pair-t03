@@ -21,6 +21,8 @@ def run(runtime: PlantRuntime, command: str, payload: dict[str, Any] | None = No
 
 
 def publish_and_select(runtime: PlantRuntime) -> None:
+    if runtime.water_quotas.current_for(RECIPE["grade"]) is None:
+        run(runtime, "water_quota.publish", {"grade": RECIPE["grade"], "recycled_ratio_percent": 20.0})
     run(runtime, "recipe.publish", dict(RECIPE))
     run(runtime, "recipe.select", {"name": RECIPE["name"]})
 

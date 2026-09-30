@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from types import SimpleNamespace
 
 from mixplant.config import Limits
 from mixplant.errors import DuplicateError, NotFoundError, ValidationError
@@ -61,6 +62,15 @@ def test_validation_flags_a_high_moisture_reference() -> None:
     findings = validate_recipe(recipe, Limits(moisture_max_percent=2.0))
     require_valid([finding for finding in findings if finding.code != "moisture_reference"])
     assert [finding.ok for finding in findings if finding.code == "moisture_reference"] == [False]
+
+
+def test_validation_requires_current_grade_quota_when_quota_management_is_enabled() -> None:
+    recipe = _recipe()
+    quota = SimpleNamespace(version=3, recycled_ratio_percent=20.0)
+    findings = validate_recipe(recipe, Limits(), quota, quota_required=True)
+    assert all(finding.ok for finding in findings)
+    missing = validate_recipe(recipe, Limits(), None, quota_required=True)
+    assert not [finding for finding in missing if finding.code == "water_quota"][0].ok
 
 
 def test_plan_scales_and_compensates() -> None:

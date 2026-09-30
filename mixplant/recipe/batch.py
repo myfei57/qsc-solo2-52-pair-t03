@@ -19,6 +19,7 @@ def batch_payload(plan: BatchPlan) -> dict[str, Any]:
         "quantity": plan.quantity,
         "unit": plan.unit,
         "materials": dict(plan.materials),
+        "mixing_water_l": plan.mixing_water_l,
         "free_water_l": plan.free_water_l,
     }
 
@@ -32,5 +33,6 @@ def plan_summary(plan: BatchPlan) -> dict[str, Any]:
         "version": plan.version,
         "materials": {material: plan.material_mass(material) for material in sorted(plan.materials)},
         "dry_total": plan.dry_total,
+        "mixing_water_l": plan.mixing_water_l,
         "free_water_l": plan.free_water_l,
     }

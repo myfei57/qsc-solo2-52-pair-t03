@@ -36,10 +36,12 @@ class RecipeService(PlantService):
         context: SharedContext,
         topology: Topology,
         machine: SequenceMachine | None = None,
+        quotas: Any | None = None,
     ) -> None:
         super().__init__(context, machine)
         self.book = RecipeBook()
         self.topology = topology
+        self.quotas = quotas
         self._mapping: MaterialMapping | None = None
 
     def publish_recipe(
@@ -68,12 +70,24 @@ class RecipeService(PlantService):
                 else moisture_ref_percent
             ),
         )
-        require_valid(validate_recipe(recipe, self.context.config.limits))
+        quota = None if self.quotas is None else self.quotas.current_for(grade_code)
+        require_valid(
+            validate_recipe(
+                recipe,
+                self.context.config.limits,
+                quota,
+                quota_required=self.quotas is not None,
+            )
+        )
         self.book.publish(recipe)
-        self.publish(PUBLISHED_KIND, {"active": True, **recipe.describe()})
+        quota_payload = None if quota is None else quota.describe()
+        self.publish(PUBLISHED_KIND, {"active": True, **recipe.describe(), "water_quota": quota_payload})
         self.publish(VERSION_KIND, {"active": True, "name": recipe.name, "version": recipe.version})
-        self.emit("recipe.published", {"name": recipe.name, "version": recipe.version})
-        return {"recipe": recipe.describe(), "generation": token.describe()}
+        self.emit(
+            "recipe.published",
+            {"name": recipe.name, "version": recipe.version, "water_quota": quota_payload},
+        )
+        return {"recipe": recipe.describe(), "generation": token.describe(), "water_quota": quota_payload}
 
     def select(self, name: str) -> dict[str, Any]:
         """Select ``name`` and rebuild the material mapping for its version."""

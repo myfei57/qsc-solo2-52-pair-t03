@@ -24,11 +24,18 @@ class AuditSubscriber:
         self.handle(event)
 
     def handle(self, event: Event) -> None:
+        payload = {
+            "topic": event.topic,
+            "name": event.name,
+            "origin": event.origin,
+            "tick": event.tick,
+        }
+        payload.update(event.payload)
         self._repository.publish(
             AUDIT_KIND,
             event.origin,
             int(event.payload.get("generation", 0) or 0),
-            {"topic": event.topic, "name": event.name, "origin": event.origin, "tick": event.tick},
+            payload,
         )
         self._seen += 1
 

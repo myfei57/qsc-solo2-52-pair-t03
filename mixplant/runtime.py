@@ -41,6 +41,9 @@ from .statemachine.phases import LINE_SEQUENCES
 from .store.repository import RecordRepository, RestoreReport
 from .versioning.expiry import Validity
 from .versioning.facade import VersionedArtifacts
+from .water.ledger import QuotaBinding, WaterLedgerEntry
+from .water.quota import WaterQuota
+from .water.quota_service import WaterQuotaService
 from .water.service import WaterService
 
 BOOT_KIND = "station.boot"
@@ -53,6 +56,9 @@ LATCH_KIND = "sampler.latch"
 COMP_KIND = "moist.comp"
 SELECTED_KIND = "recipe.selected"
 PUBLISHED_KIND = "recipe.published"
+WATER_QUOTA_KIND = "water.quota"
+WATER_BINDING_KIND = "water.binding"
+WATER_USAGE_KIND = "water.usage"
 
 LINES: tuple[str, ...] = tuple(LINE_SEQUENCES)
 EXTRA_DEVICES = (
@@ -100,20 +106,28 @@ class PlantRuntime:
             gate=self.gate,
             ids=self.ids,
         )
-        self.recipes = RecipeService(self.context, self.topology, self.machines["batch"])
+        self.water_quotas = WaterQuotaService(self.context, self.machines["batch"])
+        self.recipes = RecipeService(
+            self.context,
+            self.topology,
+            self.machines["batch"],
+            quotas=self.water_quotas,
+        )
         self.agg = AggService(self.context, self.recipes, self.machines["batch"])
         self.moist = MoistService(self.context, self.recipes.book, default_table(), self.machines["batch"])
         self.cement = CementService(self.context, self.machines["mix"])
-        self.water = WaterService(self.context, self.machines["mix"])
+        self.water = WaterService(self.context, self.machines["mix"], quotas=self.water_quotas)
+        self.agg.water_service = self.water
         self.mix = MixService(self.context, self.recipes, self.machines["mix"])
         self.chute = ChuteService(self.context, self.recipes, self.machines["mix"])
         self.pump = PumpService(self.context, self.machines["delivery"])
         self.sampler = SamplerService(self.context, self.recipes, self.machines["delivery"])
-        self.audit = AuditService(self.context, self.machines["batch"], alarms=self.alarms)
+        self.audit = AuditService(self.context, self.machines["batch"], alarms=self.alarms, water=self.water)
         self.controller = PlantController(self)
         self.boot_report: RestoreReport | None = None
         self._services: dict[str, PlantService] = {
             "recipe": self.recipes,
+            "water_quotas": self.water_quotas,
             "agg": self.agg,
             "moist": self.moist,
             "cement": self.cement,
@@ -184,6 +198,22 @@ class PlantRuntime:
             if record.kind == PUBLISHED_KIND:
                 recipe = Recipe.from_document(record.payload)
                 self.recipes.adopt(recipe, selected=False)
+            elif record.kind == WATER_QUOTA_KIND:
+                self.water_quotas.adopt(WaterQuota.from_document(record.payload))
+            elif record.kind == WATER_BINDING_KIND:
+                self.water.adopt_binding(
+                    QuotaBinding(
+                        batch_id=str(record.payload["batch_id"]),
+                        grade=str(record.payload.get("grade", "")),
+                        quantity_m3=float(record.payload.get("quantity_m3", 0.0)),
+                        quota_version=int(record.payload.get("quota_version", 0)),
+                        recycled_limit_l=float(record.payload.get("recycled_limit_l", 0.0)),
+                        total_water_l=float(record.payload.get("total_water_l", 0.0)),
+                        bound_tick=int(record.payload.get("bound_tick", record.tick)),
+                    )
+                )
+            elif record.kind == WATER_USAGE_KIND:
+                self.water.adopt_usage(WaterLedgerEntry.from_document(record.payload))
             elif record.kind == SELECTED_KIND:
                 self.recipes.adopt(self.recipes.book.current(str(record.payload["name"])), selected=True)
             elif record.kind == BATCH_KIND:
@@ -229,6 +259,9 @@ class PlantRuntime:
                     validity=Validity.never(record.tick),
                 )
         self.moist.sync(corrections)
+        tank = self.view.latest("water.tank")
+        if tank is not None:
+            self.water.restore_tank(float(tank.payload.get("level_l", self.water.tank()["level_l"])))
 
     def _hydrate_machines(self) -> None:
         for line, machine in self.machines.items():
@@ -303,6 +336,21 @@ class PlantRuntime:
             "delta": self.view.delta(tick).describe(),
         }
 
+    def water_quota_history(self, grade: str) -> dict[str, Any]:
+        """Return the immutable quota versions used to explain grade history."""
+
+        return {
+            "grade": grade,
+            "scope": "grade",
+            "migration_policy": "finish_running_batch_under_bound_version",
+            "versions": self.water_quotas.history(grade),
+        }
+
+    def water_usage(self, batch_id: str) -> dict[str, Any]:
+        """Return one batch's quota-bound recycled and fresh water usage."""
+
+        return self.water.quota_usage(batch_id)
+
     def publish_baseline(
         self,
         name: str,
@@ -376,6 +424,74 @@ class PlantRuntime:
         self.store.publish(CLOCK_KIND, "console", 0, {"active": True, "tick": moved})
         return moved
 
+    def _publish_water_quota(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Publish a grade quota and refuse any shift-specific interpretation."""
+
+        self._reject_shift_scope(payload)
+        ratio_key = next(
+            (
+                key
+                for key in ("recycled_ratio_percent", "max_reclaimed_ratio_percent", "recycled_max_ratio_percent")
+                if key in payload
+            ),
+            "recycled_ratio_percent",
+        )
+        return self.water_quotas.publish_quota(
+            grade=text(payload, "grade"),
+            recycled_ratio_percent=number(payload, ratio_key),
+        )
+
+    def _water_meter_payload(self, payload: Mapping[str, Any], *, flush: bool) -> dict[str, Any]:
+        """Parse a metering command and keep grade quota accounting shift-free."""
+
+        self._reject_shift_scope(payload)
+        parsed = {
+            "litres": number(payload, "litres"),
+            "rate_lps": number(payload, "rate_lps"),
+            "source": self._water_source(payload),
+            "event_id": self._event_key(payload),
+        }
+        if not flush:
+            parsed["batch_id"] = optional_text(payload, "batch_id", None) or None
+        return parsed
+
+    @staticmethod
+    def _event_key(payload: Mapping[str, Any]) -> str | None:
+        value = payload.get("event_id", payload.get("idempotency_key"))
+        return None if value in (None, "") else str(value)
+
+    @staticmethod
+    def _water_source(payload: Mapping[str, Any]) -> str:
+        raw = optional_text(payload, "source", "fresh")
+        aliases = {
+            "fresh": "fresh",
+            "new": "fresh",
+            "new_water": "fresh",
+            "fresh_water": "fresh",
+            "reclaimed": "reclaimed",
+            "recycled": "reclaimed",
+            "recycle": "reclaimed",
+            "reclaimed_water": "reclaimed",
+            "recycled_water": "reclaimed",
+        }
+        source = aliases.get(raw)
+        if source is None:
+            from .errors import ValidationError
+
+            raise ValidationError("water source must be fresh or reclaimed", source=raw)
+        return source
+
+    @staticmethod
+    def _reject_shift_scope(payload: Mapping[str, Any]) -> None:
+        for forbidden in ("scope", "shift_id", "shift"):
+            if forbidden in payload:
+                from .errors import ValidationError
+
+                raise ValidationError(
+                    "water quota scope is fixed to grade and cannot be recalculated per shift",
+                    supplied_scope=forbidden,
+                )
+
     def commands(self) -> dict[str, Callable[[Mapping[str, Any]], Any]]:
         """Return the command surface the console exposes."""
 
@@ -392,6 +508,8 @@ class PlantRuntime:
                 ),
             ),
             "recipe.select": lambda payload: self.recipes.select(text(payload, "name")),
+            "water.quota.publish": lambda payload: self._publish_water_quota(payload),
+            "water_quota.publish": lambda payload: self._publish_water_quota(payload),
             "batch.declare": lambda payload: self.agg.declare_batch(
                 batch_id=text(payload, "batch_id"), quantity=number(payload, "quantity")
             ),
@@ -426,11 +544,21 @@ class PlantRuntime:
                 mass_kg=number(payload, "mass_kg"),
                 rate_kgs=number(payload, "rate_kgs"),
             ),
-            "water.open_valve": lambda payload: self.water.open_valve(target_l=number(payload, "target_l")),
-            "water.dispense": lambda payload: self.water.dispense(
-                litres=number(payload, "litres"), rate_lps=number(payload, "rate_lps")
+            "water.open_valve": lambda payload: self.water.open_valve(
+                target_l=number(payload, "target_l"),
+                source=self._water_source(payload),
             ),
-            "water.prime": lambda payload: self.water.prime(litres=number(payload, "litres")),
+            "water.dispense": lambda payload: self.water.dispense(
+                **self._water_meter_payload(payload, flush=False)
+            ),
+            "water.flush": lambda payload: self.water.flush(
+                **self._water_meter_payload(payload, flush=True)
+            ),
+            "water.prime": lambda payload: self.water.prime(
+                litres=number(payload, "litres"),
+                source=self._water_source(payload),
+                event_id=self._event_key(payload),
+            ),
             "mix.start": lambda payload: self.mix.start(),
             "mix.feed": lambda payload: self.mix.feed(component=text(payload, "component")),
             "mix.time": lambda payload: self.mix.begin_timer(),
