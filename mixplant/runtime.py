@@ -42,6 +42,7 @@ from .store.repository import RecordRepository, RestoreReport
 from .versioning.expiry import Validity
 from .versioning.facade import VersionedArtifacts
 from .water.service import WaterService
+from .water.quota import QuotaService
 
 BOOT_KIND = "station.boot"
 CLOCK_KIND = "store.clock"
@@ -53,6 +54,10 @@ LATCH_KIND = "sampler.latch"
 COMP_KIND = "moist.comp"
 SELECTED_KIND = "recipe.selected"
 PUBLISHED_KIND = "recipe.published"
+QUOTA_KIND = "water.quota"
+QUOTA_PIN_KIND = "water.pin"
+QUOTA_USAGE_KIND = "water.usage"
+QUOTA_RINSE_KIND = "water.rinse"
 
 LINES: tuple[str, ...] = tuple(LINE_SEQUENCES)
 EXTRA_DEVICES = (
@@ -105,6 +110,8 @@ class PlantRuntime:
         self.moist = MoistService(self.context, self.recipes.book, default_table(), self.machines["batch"])
         self.cement = CementService(self.context, self.machines["mix"])
         self.water = WaterService(self.context, self.machines["mix"])
+        self.quotas = QuotaService(self.context, self.recipes, self.machines["batch"])
+        self.recipes.bind_quota_table(self.quotas.table)
         self.mix = MixService(self.context, self.recipes, self.machines["mix"])
         self.chute = ChuteService(self.context, self.recipes, self.machines["mix"])
         self.pump = PumpService(self.context, self.machines["delivery"])
@@ -118,6 +125,7 @@ class PlantRuntime:
             "moist": self.moist,
             "cement": self.cement,
             "water": self.water,
+            "quota": self.quotas,
             "mix": self.mix,
             "chute": self.chute,
             "pump": self.pump,
@@ -135,6 +143,7 @@ class PlantRuntime:
     def _wire_bus(self) -> None:
         self.bus.subscribe(ALARM, self.alarms)
         self.bus.subscribe(ALARM, self.audit.handle_alarm)
+        self.bus.subscribe("agg", self.quotas.handle_batch_declared)
         self.bus.subscribe_all(self.audit_subscriber)
 
     def bootstrap(self) -> dict[str, Any]:
@@ -228,6 +237,14 @@ class PlantRuntime:
                     1,
                     validity=Validity.never(record.tick),
                 )
+            elif record.kind == QUOTA_KIND:
+                self.quotas.adopt_quota(record.payload)
+            elif record.kind == QUOTA_PIN_KIND:
+                self.quotas.adopt_pin(record.payload)
+            elif record.kind == QUOTA_USAGE_KIND:
+                self.quotas.adopt_usage(record.payload)
+            elif record.kind == QUOTA_RINSE_KIND:
+                self.quotas.adopt_rinse(record.payload)
         self.moist.sync(corrections)
 
     def _hydrate_machines(self) -> None:
@@ -431,6 +448,26 @@ class PlantRuntime:
                 litres=number(payload, "litres"), rate_lps=number(payload, "rate_lps")
             ),
             "water.prime": lambda payload: self.water.prime(litres=number(payload, "litres")),
+            "water.quota.publish": lambda payload: self.quotas.publish_quota(
+                grade=text(payload, "grade"),
+                recycled_ratio=number(payload, "recycled_ratio"),
+                max_litres=number(payload, "max_litres"),
+            ),
+            "water.quota.ceiling": lambda payload: self.quotas.ceiling(
+                text(payload, "grade"), batch_water_l=optional_number(payload, "batch_water_l", 0.0)
+            ),
+            "water.draw": lambda payload: self.quotas.draw(
+                kind=optional_text(payload, "kind", "recycled"),
+                batch_id=text(payload, "batch_id"),
+                litres=number(payload, "litres"),
+                idem=text(payload, "idem"),
+                shift=optional_text(payload, "shift", "default"),
+            ),
+            "water.rinse": lambda payload: self.quotas.rinse(
+                litres=number(payload, "litres"),
+                idem=text(payload, "idem"),
+                shift=optional_text(payload, "shift", "default"),
+            ),
             "mix.start": lambda payload: self.mix.start(),
             "mix.feed": lambda payload: self.mix.feed(component=text(payload, "component")),
             "mix.time": lambda payload: self.mix.begin_timer(),

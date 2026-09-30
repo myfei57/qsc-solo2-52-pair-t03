@@ -38,6 +38,9 @@ class PlantController:
             water_service=self.runtime.water,
         )
 
+    def quota_view(self) -> dict[str, Any]:
+        return self.runtime.quotas.quota_view()
+
     def discharge_view(self) -> dict[str, Any]:
         return truck_view(
             chute_service=self.runtime.chute,

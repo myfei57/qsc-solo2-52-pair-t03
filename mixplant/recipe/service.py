@@ -41,6 +41,21 @@ class RecipeService(PlantService):
         self.book = RecipeBook()
         self.topology = topology
         self._mapping: MaterialMapping | None = None
+        self._quota_table = None
+
+    def bind_quota_table(self, table) -> None:
+        """Share the recycled-water quota table used for recipe validation."""
+
+        self._quota_table = table
+
+    def _require_quota_consistent(self, recipe: Recipe) -> None:
+        """Run the shared recipe/quota gate when a quota table is wired in."""
+
+        if self._quota_table is None:
+            return
+        from ..water.quota.validation import require_quota_consistent
+
+        require_quota_consistent(recipe, self._quota_table)
 
     def publish_recipe(
         self,
@@ -69,6 +84,7 @@ class RecipeService(PlantService):
             ),
         )
         require_valid(validate_recipe(recipe, self.context.config.limits))
+        self._require_quota_consistent(recipe)
         self.book.publish(recipe)
         self.publish(PUBLISHED_KIND, {"active": True, **recipe.describe()})
         self.publish(VERSION_KIND, {"active": True, "name": recipe.name, "version": recipe.version})
